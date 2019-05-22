@@ -1,0 +1,29 @@
+[package]
+name = "rustika"
+version = "0.1.0"
+authors = ["matthiasseitz <matthias.seitz@tum.de>"]
+edition = "2018"
+repository = "https://github.com/MattsSe/rustika"
+documentation = "https://docs.rs/rustika"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[badges]
+travis-ci = { repository = "MattsSe/rustika", branch = "master" }
+
+[[bin]]
+name = "rustika"
+path = "src/rustika.rs"
+
+[dependencies]
+failure = "0.1.5"
+structopt = "0.2.15"
+serde = { version="1.0.91", features=["derive"] }
+log = "0.4.6"
+reqwest = "0.9.17"
+serde_json = "1.0.39"
+select = { version="0.4.2" }
+
+[features]
+dropin = []
+info = []
