@@ -14,16 +14,17 @@ travis-ci = { repository = "MattsSe/rustika", branch = "master" }
 [[bin]]
 name = "rustika"
 path = "src/rustika.rs"
+required-features = ["cli"]
 
 [dependencies]
 failure = "0.1.5"
-structopt = "0.2.15"
-serde = { version="1.0.91", features=["derive"] }
+structopt = { version = "0.2", optional = true }
+serde = { version="1.0", features=["derive"] }
 log = "0.4.6"
-reqwest = "0.9.17"
-serde_json = "1.0.39"
-select = { version="0.4.2" }
+reqwest = "0.9"
+serde_json = "1.0"
 
 [features]
 dropin = []
 info = []
+cli = ["structopt"]
