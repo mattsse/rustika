@@ -14,15 +14,13 @@ enum App {
     /// See how the server is configured
     #[structopt(name = "config")]
     Config(Config),
+    /// translate documents
+    #[structopt(name = "translate")]
+    Translate,
 }
 
 fn run_config(config: &Config, client: &TikaClient) -> Result<()> {
-    println!(
-        "{}",
-        client
-            .get_json(&client.endpoint_url(config.path()))?
-            .text()?
-    );
+    println!("{}", client.get_json(config.path())?.text()?);
     Ok(())
 }
 
@@ -39,7 +37,7 @@ enum Parse {
 fn main() -> Result<()> {
     let app = App::from_args();
 
-    let client = TikaBuilder::new("http://localhost:9998").build();
+    let client = TikaBuilder::with_server().unwrap();
 
     match app {
         App::Config(config) => run_config(&config, &client),
