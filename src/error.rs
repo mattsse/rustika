@@ -28,6 +28,7 @@ impl fmt::Display for Error {
 
 /// all different error types this crate uses
 #[derive(Debug, Fail)]
+#[allow(missing_docs)]
 pub enum ErrorKind {
     /// if an invalid type was requested
     #[fail(display = "invalid type name: {}", name)]
@@ -42,13 +43,16 @@ pub enum ErrorKind {
 
     /// an error that occurred while operating with [reqwest]
     #[fail(display = "{}", reqwest)]
-    ReqWest {
-        /// the notification
-        reqwest: reqwest::Error,
-    },
+    ReqWest { reqwest: reqwest::Error },
     /// if a error in serde occurred
     #[fail(display = "invalid serde: {}", error)]
     Serde { error: serde_json::Error },
+
+    #[fail(display = "Failed to parse url: {}", url)]
+    Url { url: reqwest::UrlError },
+    // TODO unify to single parse error
+    #[fail(display = "Failed to parse address: {}", addr)]
+    Addr { addr: std::net::AddrParseError },
 }
 
 impl From<ErrorKind> for Error {
@@ -72,5 +76,17 @@ impl From<serde_json::Error> for Error {
 impl From<reqwest::Error> for Error {
     fn from(reqwest: reqwest::Error) -> Error {
         ErrorKind::ReqWest { reqwest }.into()
+    }
+}
+
+impl From<reqwest::UrlError> for Error {
+    fn from(url: reqwest::UrlError) -> Error {
+        ErrorKind::Url { url }.into()
+    }
+}
+
+impl From<std::net::AddrParseError> for Error {
+    fn from(addr: std::net::AddrParseError) -> Error {
+        ErrorKind::Addr { addr }.into()
     }
 }
