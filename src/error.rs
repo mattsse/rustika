@@ -6,8 +6,17 @@ pub type Result<T> = result::Result<T, Error>;
 
 /// An error that can occur while interacting while handling rustika.
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub struct Error {
     ctx: Context<ErrorKind>,
+}
+
+impl Error {
+    pub(crate) fn config<T: AsRef<str>>(msg: T) -> Error {
+        Error::from(ErrorKind::Config {
+            msg: msg.as_ref().to_string(),
+        })
+    }
 }
 
 impl Fail for Error {
@@ -40,6 +49,9 @@ pub enum ErrorKind {
         /// the notification
         msg: String,
     },
+
+    #[fail(display = "Failed during std::io operation: {}", io)]
+    IO { io: std::io::Error },
 
     /// an error that occurred while operating with [reqwest]
     #[fail(display = "{}", reqwest)]
@@ -88,5 +100,11 @@ impl From<reqwest::UrlError> for Error {
 impl From<std::net::AddrParseError> for Error {
     fn from(addr: std::net::AddrParseError) -> Error {
         ErrorKind::Addr { addr }.into()
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(io: std::io::Error) -> Error {
+        ErrorKind::IO { io }.into()
     }
 }

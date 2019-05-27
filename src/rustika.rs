@@ -1,6 +1,8 @@
+use rustika::client::{TikaServerJar, Verbosity};
 use rustika::web::config::Config;
 use rustika::web::response::ServerConfig;
 use rustika::{Result, TikaBuilder, TikaClient};
+use std::net;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
@@ -34,13 +36,36 @@ enum Parse {
     Meta,
 }
 
+fn server_demo() -> Result<()> {
+    let mut client = TikaClient::default();
+
+    let jar = TikaServerJar::from_env()?;
+    let addr = net::SocketAddr::new(net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)), 9998);
+    let handle = jar.start_server(&addr, Verbosity::Silent)?;
+
+    client.server_handle = Some(handle);
+
+    //    let target = client.download_server_jar().expect("Failed to download");
+    //
+    //    match app {
+    //        App::Config(config) => run_config(&config, &client),
+    //        _ => Ok(()),
+    //    }
+
+    println!("sleeping...");
+    std::thread::sleep(std::time::Duration::from_secs(45));
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
-    let app = App::from_args();
+    use which;
+    pretty_env_logger::init();
+    //    let app = App::from_args();
 
-    let client = TikaBuilder::with_server().unwrap();
+    //    println!("{:?}", which::which("java").unwrap());
 
-    match app {
-        App::Config(config) => run_config(&config, &client),
-        _ => Ok(()),
-    }
+    server_demo();
+
+    Ok(())
 }

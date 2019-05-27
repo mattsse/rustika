@@ -1,5 +1,7 @@
 #[macro_use]
 extern crate serde;
+#[macro_use]
+extern crate log;
 
 pub mod client;
 mod error;
@@ -23,16 +25,29 @@ pub enum TikaMode {
 
 impl TikaMode {
     #[inline]
-    pub fn client_server(addr: &str) -> Result<Self> {
-        Ok(TikaMode::ClientServer(addr.parse()?))
+    pub fn client_server<T: AsRef<str>>(addr: T) -> Result<Self> {
+        Ok(TikaMode::ClientServer(addr.as_ref().parse()?))
+    }
+
+    pub fn server_endpoint(&self) -> Url {
+        match self {
+            TikaMode::ClientServer(addr) => Url::parse(&format!("http://{}", addr)).unwrap(),
+            TikaMode::ClientOnly(url) => url.clone(),
+        }
     }
 }
 
 impl Default for TikaMode {
     fn default() -> Self {
-        TikaMode::ClientServer(net::SocketAddr::new(
-            net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)),
-            9998,
-        ))
+        if let Ok(url) = ::std::env::var("TIKA_SERVER_ENDPOINT") {
+            TikaMode::ClientOnly(
+                Url::parse(&url).expect(&format!("Failed to convert {} to a valid url", url)),
+            )
+        } else {
+            TikaMode::ClientServer(net::SocketAddr::new(
+                net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)),
+                9998,
+            ))
+        }
     }
 }
