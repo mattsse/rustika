@@ -1,15 +1,13 @@
 use crate::error::{Error, Result};
-use crate::web::config::Config;
-use crate::web::config::{Detector, MimeType, MimeTypeInner, Parser};
+use crate::web::config::{Config, Detector, MimeType, MimeTypeInner, Parser};
 use crate::TikaMode;
 use reqwest::{self, IntoUrl, Request, Response, Url};
 use serde::export::Option::Some;
 use std::collections::HashMap;
-use std::env;
-use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::{env, fs};
 
 #[derive(Debug)]
 pub struct ServerPolicy {
@@ -32,10 +30,10 @@ pub struct TikaClient {
     config: TikaConfig,
     /// endpoint of the tika server
     server_endpoint: Url,
+    /// handle to the spawned tika server
+    server_handle: Option<Child>,
     /// inner client to execute http requests
     pub(crate) client: reqwest::Client,
-    /// handle to the spawned tika server
-    pub server_handle: Option<Child>,
 }
 
 impl TikaClient {
@@ -45,6 +43,30 @@ impl TikaClient {
     pub fn stop_server(&mut self) {}
 
     pub fn restart_server(&mut self, server_policy: ServerPolicy) {}
+
+    fn kill_server(&mut self) -> Result<()> {
+        // kill the spawned server
+        if let Some(child) = &mut self.server_handle {
+            match child.kill() {
+                Err(e) => {
+                    error!(
+                        "Failed to shutdown the running tika server instance on {}: {}",
+                        self.server_endpoint, e
+                    );
+                    Err(Error::server(format!(
+                        "Failed to shutdown the running tika server instance on {}: {}",
+                        self.server_endpoint, e
+                    )))
+                }
+                _ => {
+                    debug!("Shutdown tika server");
+                    Ok(())
+                }
+            }
+        } else {
+            Ok(())
+        }
+    }
 
     /// the endpoint of the tika server
     pub fn server_endpoint(&self) -> &Url {
@@ -56,8 +78,8 @@ impl TikaClient {
     }
 
     #[inline]
-    pub fn endpoint_url(&self, path: &str) -> Result<Url> {
-        Ok(self.server_endpoint.join(path)?)
+    pub fn endpoint_url<T: AsRef<str>>(&self, path: T) -> Result<Url> {
+        Ok(self.server_endpoint.join(path.as_ref())?)
     }
 
     #[inline]
@@ -96,6 +118,7 @@ impl TikaClient {
         )?)
     }
 
+    /// returns all the mime types configured on the server
     pub fn mime_types(&self) -> Result<Vec<MimeType>> {
         let resp = self.get_json(Config::MimeTypes.path())?;
 
@@ -117,7 +140,7 @@ impl TikaClient {
     }
 
     /// downloads the tika server jar
-    pub fn download_server_jar(&mut self) -> Result<PathBuf> {
+    pub fn download_server_jar(&mut self) -> Result<&TikaServerFile> {
         debug!("Fetching tika server jar file.");
         let mut resp = self
             .client
@@ -140,9 +163,13 @@ impl TikaClient {
             written
         );
 
-        self.config.tika_server = Some(TikaServerJar::Download(server_jar.clone()));
+        self.config.tika_server_file =
+            TikaServerFileLocation::File(TikaServerFile::Download(server_jar));
 
-        Ok(server_jar)
+        match &self.config.tika_server_file {
+            TikaServerFileLocation::File(file) => Ok(file),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -154,13 +181,10 @@ impl Default for TikaClient {
 
 impl Drop for TikaClient {
     fn drop(&mut self) {
-        // kill the spawned server
-        if let Some(child) = &mut self.server_handle {
-            match child.kill() {
-                Err(e) => error!("Failed to shutdown the running tika server instance. {}", e),
-                _ => debug!("Shutdown tika server"),
-            }
-        }
+        self.kill_server().expect(&format!(
+            "Failed shutting down the Tika Server on {}",
+            self.server_endpoint
+        ));
     }
 }
 
@@ -173,7 +197,7 @@ pub struct TikaBuilder {
     /// the path where to store installation and files
     pub tika_path: Option<PathBuf>,
     /// path to the tika server jar file
-    pub tika_server_jar: Option<String>,
+    pub tika_server_file: TikaServerFileLocation,
     /// translator class used to translate docs
     pub tika_translator: Option<String>,
     /// whether the tika server should log to std::out
@@ -186,7 +210,7 @@ impl TikaBuilder {
             tika_mode,
             tika_version: None,
             tika_path: None,
-            tika_server_jar: None,
+            tika_server_file: TikaServerFileLocation::default(),
             tika_translator: None,
             server_verbosity: Verbosity::default(),
         }
@@ -212,24 +236,47 @@ impl TikaBuilder {
         self
     }
 
-    pub fn server_jar<T: Into<String>>(mut self, server_jar: T) -> Self {
-        self.tika_server_jar = Some(server_jar.into());
+    pub fn server_file(mut self, server_file: TikaServerFileLocation) -> Self {
+        self.tika_server_file = server_file;
         self
     }
 
-    pub fn translator<T: Into<String>>(mut self, server_jar: T) -> Self {
-        self.tika_server_jar = Some(server_jar.into());
+    pub fn translator<T: Into<String>>(mut self, translator: T) -> Self {
+        self.tika_translator = Some(translator.into());
         self
     }
+
     pub fn server_verbosity(mut self, verbosity: Verbosity) -> Self {
         self.server_verbosity = verbosity;
         self
     }
 
+    /// creates a new `TikaClient` and starts the server
+    /// if no server file is available, it downloads it first
+    pub fn start_server(self) -> Result<TikaClient> {
+        if let TikaMode::ClientServer(addr) = self.tika_mode {
+            let mut client = self.build();
+            let verbosity = client.config.server_verbosity;
+
+            let server_file = match client.config.tika_server_file {
+                TikaServerFileLocation::Remote(_) => client.download_server_jar()?,
+                TikaServerFileLocation::File(ref file) => file,
+            };
+
+            let handle = server_file.start_server(&addr, verbosity)?;
+            client.server_handle = Some(handle);
+            Ok(client)
+        } else {
+            Err(Error::config(
+                "Can not start tika server, because client is configured as client only.",
+            ))
+        }
+    }
+
     pub fn build(self) -> TikaClient {
         let tika_version = self.tika_version.unwrap_or(TikaConfig::default_version());
         let config = TikaConfig {
-            tika_server: None,
+            tika_server_file: TikaServerFileLocation::default(),
             tika_version,
             tika_path: self.tika_path.unwrap_or(env::temp_dir()),
             tika_mode: self.tika_mode,
@@ -269,7 +316,7 @@ pub struct TikaConfig {
     /// the path where to store installation and files
     pub tika_path: PathBuf,
     /// path to the tika server jar
-    pub tika_server: Option<TikaServerJar>,
+    pub tika_server_file: TikaServerFileLocation,
     /// how the the tika server is configured
     pub tika_mode: TikaMode,
     /// translator class used to translate docs
@@ -301,7 +348,7 @@ impl Default for TikaConfig {
         let tika_version = Self::default_version();
 
         TikaConfig {
-            tika_server: None,
+            tika_server_file: TikaServerFileLocation::default(),
             tika_version,
             tika_path: env::temp_dir(),
             tika_mode: TikaMode::default(),
@@ -312,14 +359,22 @@ impl Default for TikaConfig {
 }
 
 #[derive(Debug, Clone)]
-pub enum TikaServer {
-    File(TikaServerJar),
+pub enum TikaServerFileLocation {
+    /// local jar or executable
+    File(TikaServerFile),
+    /// endpoint of the tika server jar
     Remote(String),
 }
 
-impl Default for TikaServer {
+impl Default for TikaServerFileLocation {
     fn default() -> Self {
-        unimplemented!()
+        if let Ok(file) = TikaServerFile::from_env() {
+            TikaServerFileLocation::File(file)
+        } else {
+            TikaServerFileLocation::Remote(TikaConfig::remote_server_jar(
+                &TikaConfig::default_version(),
+            ))
+        }
     }
 }
 
@@ -329,31 +384,34 @@ impl Default for TikaServer {
 /// (e.g. the homebrew installation of tika includes the system shell script `tika-rest-server` )
 /// or a jar file, which is either downloaded or pointed to by the `TIKA_SERVER_JAR` env variable
 #[derive(Debug, Clone)]
-pub enum TikaServerJar {
+pub enum TikaServerFile {
     /// `tika-rest-server`executable directly in `PATH`
-    Os(PathBuf),
+    PathExecutable(PathBuf),
     /// env var pointer to a tika server jar
-    Var(PathBuf),
+    EnvVarJar(PathBuf),
     /// stores the path to a downloaded server jar either in `TIKA_PATH` or within a temp dir
     Download(PathBuf),
 }
 
-impl TikaServerJar {
+impl TikaServerFile {
     /// returns a env var pointer, either `TikaServer::Os` or `TikaServer::Var` to a tika server file.
     /// `TikaServer::Var` trumps any OS variable
     pub fn from_env() -> Result<Self> {
-        if let Ok(path) = env::var("TIKA_SERVER_JAR").map(PathBuf::from) {
-            return if path.exists() {
-                Ok(TikaServerJar::Var(path))
-            } else {
-                Err(Error::config(format!(
-                    "Set `TIKA_SERVER_JAR` at {} does not exist",
-                    path.display()
-                )))
-            };
-        }
+        match env::var("TIKA_SERVER_JAR").map(PathBuf::from) {
+            Ok(path) => return Ok(TikaServerFile::EnvVarJar(path)),
+            Err(env::VarError::NotUnicode(var)) => Err(()).expect(&format!(
+                "TIKA_SERVER_JAR env var found but did not contain valid unicode {:?}",
+                var
+            )),
+            _ => (),
+        };
 
-        Err(Error::config("Failed to retrieve"))
+        match which::which("tika-rest-server") {
+            Ok(path) => Ok(TikaServerFile::PathExecutable(path)),
+            Err(_) => Err(Error::config(
+                "Could not find system wide tika-rest-server executable",
+            )),
+        }
     }
 
     /// checks whether the file it points to exists
@@ -364,18 +422,22 @@ impl TikaServerJar {
     /// the location of the server executable or jar file
     pub fn location(&self) -> &PathBuf {
         match self {
-            TikaServerJar::Os(path) | TikaServerJar::Var(path) | TikaServerJar::Download(path) => {
-                path
-            }
+            TikaServerFile::PathExecutable(path)
+            | TikaServerFile::EnvVarJar(path)
+            | TikaServerFile::Download(path) => path,
         }
     }
 
     /// starts a new server instance and returns the handle to the spawned process
-    pub fn start_server(&self, addr: &SocketAddr, server_verbosity: Verbosity) -> Result<Child> {
+    pub(crate) fn start_server(
+        &self,
+        addr: &SocketAddr,
+        server_verbosity: Verbosity,
+    ) -> Result<Child> {
         debug!("launching tika server from {}", self.location().display());
         let mut cmd = match self {
-            TikaServerJar::Os(path) => Command::new(path),
-            TikaServerJar::Var(path) | TikaServerJar::Download(path) => {
+            TikaServerFile::PathExecutable(path) => Command::new(path),
+            TikaServerFile::EnvVarJar(path) | TikaServerFile::Download(path) => {
                 let java_path = which::which("java").expect("Failed to locate java in PATH.");
                 let mut cmd = Command::new(java_path);
                 cmd.arg("-cp")

@@ -17,6 +17,11 @@ impl Error {
             msg: msg.as_ref().to_string(),
         })
     }
+    pub(crate) fn server<T: AsRef<str>>(msg: T) -> Error {
+        Error::from(ErrorKind::Server {
+            msg: msg.as_ref().to_string(),
+        })
+    }
 }
 
 impl Fail for Error {
@@ -40,8 +45,8 @@ impl fmt::Display for Error {
 #[allow(missing_docs)]
 pub enum ErrorKind {
     /// if an invalid type was requested
-    #[fail(display = "invalid type name: {}", name)]
-    InvalidTypeName { name: String },
+    #[fail(display = "Tika Server Error: {}", msg)]
+    Server { msg: String },
 
     /// a config error
     #[fail(display = "{}", msg)]
