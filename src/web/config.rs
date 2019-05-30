@@ -61,12 +61,12 @@ pub struct Parser {
     pub supported_types: Vec<String>,
 }
 
-impl Parser {
-    /// returns all containing child `Parser` of this element
-    pub fn flattened(&self) -> Vec<&Self> {
-        self.children.iter().flat_map(Self::flattened).collect()
-    }
-}
+//impl Parser {
+//    /// returns all containing child `Parser` of this element
+//    pub fn flattened(&self) -> Vec<&Self> {
+//        self.children.iter().flat_map(Self::flattened).collect()
+//    }
+//}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Detector {
@@ -74,11 +74,4 @@ pub struct Detector {
     pub composite: bool,
     #[serde(default)]
     pub children: Vec<Detector>,
-}
-
-impl Detector {
-    /// returns all containing child `Detector` of this element
-    pub fn flattened(&self) -> Vec<&Self> {
-        self.children.iter().flat_map(Self::flattened).collect()
-    }
 }

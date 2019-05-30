@@ -38,14 +38,36 @@ pub struct TikaClient {
 
 impl TikaClient {
     /// starts a local server instance
-    pub fn start_server(&mut self, server_policy: ServerPolicy) {}
+    pub fn start_server(&mut self) -> Result<()> {
+        if let TikaMode::ClientServer(addr) = self.config.tika_mode {
+            let verbosity = self.config.server_verbosity;
 
-    pub fn stop_server(&mut self) {}
+            let server_file = match self.config.tika_server_file {
+                TikaServerFileLocation::Remote(_) => self.download_server_jar()?,
+                TikaServerFileLocation::File(ref file) => file,
+            };
 
-    pub fn restart_server(&mut self, server_policy: ServerPolicy) {}
+            let handle = server_file.start_server(&addr, verbosity)?;
+            self.server_handle = Some(handle);
+            Ok(())
+        } else {
+            Err(Error::config(
+                "Client is configured as `ClientOnly` and can't spawn a server instance,",
+            ))
+        }
+    }
+
+    pub fn restart_server(&mut self, addr: Option<SocketAddr>) -> Result<()> {
+        let _ = self.stop_server()?;
+        if let Some(addr) = addr {
+            self.config.tika_mode = TikaMode::ClientServer(addr);
+            self.server_endpoint = self.config.tika_mode.server_endpoint();
+        }
+        self.start_server()
+    }
 
     /// Shuts down the spawned tika server
-    fn kill_server(&mut self) -> Result<()> {
+    pub fn stop_server(&mut self) -> Result<()> {
         // kill the spawned server
         if let Some(child) = &mut self.server_handle {
             match child.kill() {
@@ -148,7 +170,7 @@ impl TikaClient {
     }
 
     /// downloads the tika server jar
-    pub fn download_server_jar(&mut self) -> Result<&TikaServerFile> {
+    pub(crate) fn download_server_jar(&mut self) -> Result<&TikaServerFile> {
         debug!("Fetching tika server jar file.");
         let mut resp = self
             .client
@@ -161,7 +183,7 @@ impl TikaClient {
 
         }
 
-        let mut out = fs::File::create(&server_jar.clone())?;
+        let mut out = fs::File::create(&server_jar)?;
         debug!("Downloading tika server jar to {}", server_jar.display());
         let written = std::io::copy(&mut resp, &mut out)?;
 
@@ -190,7 +212,7 @@ impl Default for TikaClient {
 impl Drop for TikaClient {
     fn drop(&mut self) {
         // kill the spawned server
-        self.kill_server().expect(&format!(
+        self.stop_server().expect(&format!(
             "Failed shutting down the Tika Server on {}",
             self.server_endpoint
         ));
@@ -300,23 +322,9 @@ impl TikaBuilder {
     /// creates a new `TikaClient` and starts the server
     /// if no server file is available, it downloads it first
     pub fn start_server(self) -> Result<TikaClient> {
-        if let TikaMode::ClientServer(addr) = self.tika_mode {
-            let mut client = self.build();
-            let verbosity = client.config.server_verbosity;
-
-            let server_file = match client.config.tika_server_file {
-                TikaServerFileLocation::Remote(_) => client.download_server_jar()?,
-                TikaServerFileLocation::File(ref file) => file,
-            };
-
-            let handle = server_file.start_server(&addr, verbosity)?;
-            client.server_handle = Some(handle);
-            Ok(client)
-        } else {
-            Err(Error::config(
-                "Can not start tika server, because client is configured as client only.",
-            ))
-        }
+        let mut client = self.build();
+        client.start_server()?;
+        Ok(client)
     }
 
     /// Constructs a new `TikaClient` based on its configuration

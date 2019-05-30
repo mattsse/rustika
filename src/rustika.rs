@@ -36,37 +36,16 @@ enum Parse {
     Meta,
 }
 
-fn server_demo() -> Result<()> {
-    let mut client = TikaBuilder::default()
-        .server_verbosity(Verbosity::Verbose)
-        .start_server()?;
-
-    //    let addr = net::SocketAddr::new(net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)), 9998);
-    //    let handle = jar.start_server(&addr, Verbosity::Silent)?;
-
-    //    client.server_handle = Some(handle);
-
-    //    let target = client.download_server_jar().expect("Failed to download");
-    //
-    //    match app {
-    //        App::Config(config) => run_config(&config, &client),
-    //        _ => Ok(()),
-    //    }
-
-    println!("sleeping...");
-    std::thread::sleep(std::time::Duration::from_secs(45));
-
-    Ok(())
-}
-
 fn main() -> Result<()> {
     use which;
     pretty_env_logger::init();
     //    let app = App::from_args();
 
+    let client = TikaBuilder::client_only("http://localhost:9998")?.build();
     //        println!("{:?}", which::which("tika-rest-server").unwrap());
 
-    server_demo();
+    println!("{:#?}", client.parsers_details()?);
+//    std::thread::sleep(std::time::Duration::from_secs(45));
 
     Ok(())
 }
