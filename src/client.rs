@@ -3,7 +3,6 @@ use crate::web::config::{Config, Detector, MimeType, MimeTypeInner, Parser};
 use crate::TikaMode;
 use reqwest::{self, IntoUrl, Request, Response, Url};
 use serde::export::Option::Some;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -24,6 +23,7 @@ impl Default for ServerPolicy {
     }
 }
 
+/// The client to interact with a tika server
 #[derive(Debug)]
 pub struct TikaClient {
     /// configuration of the tika server
@@ -44,6 +44,7 @@ impl TikaClient {
 
     pub fn restart_server(&mut self, server_policy: ServerPolicy) {}
 
+    /// Shuts down the spawned tika server
     fn kill_server(&mut self) -> Result<()> {
         // kill the spawned server
         if let Some(child) = &mut self.server_handle {
@@ -77,6 +78,7 @@ impl TikaClient {
         unimplemented!()
     }
 
+    /// Joins the configured tika server endpoint with the `path`
     #[inline]
     pub fn endpoint_url<T: AsRef<str>>(&self, path: T) -> Result<Url> {
         Ok(self.server_endpoint.join(path.as_ref())?)
@@ -96,7 +98,7 @@ impl TikaClient {
             .send()?)
     }
 
-    /// returns all the configured detectors of the tika server
+    /// Returns all the configured `Detector` of the tika server
     /// A `Detector` can contain child `Detectors`.
     /// Therefor the tika server returns a single `Detector` at this endpoint
     /// (the `DefaultDetector`) from which all other `Detectors` inherit.
@@ -106,12 +108,17 @@ impl TikaClient {
         )?)
     }
 
+    /// Returns all the configured `Parser` of the tika server
+    /// A `Parser` can contain child `Parser`.
+    /// Therefor the tika server returns a single `Parser` at this endpoint
+    /// (the `DefaultParser`) from which all other `Parser` inherit.
     pub fn parsers(&self) -> Result<Parser> {
         Ok(serde_json::from_reader(
             self.get_json(Config::Parsers.path())?,
         )?)
     }
 
+    /// Returns the configured `Parser` with additional information.
     pub fn parsers_details(&self) -> Result<Parser> {
         Ok(serde_json::from_reader(
             self.get_json(Config::ParsersDetails.path())?,
@@ -122,7 +129,8 @@ impl TikaClient {
     pub fn mime_types(&self) -> Result<Vec<MimeType>> {
         let resp = self.get_json(Config::MimeTypes.path())?;
 
-        let mimes: HashMap<String, serde_json::Value> = serde_json::from_reader(resp)?;
+        let mimes: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_reader(resp)?;
 
         let mimes: ::std::result::Result<Vec<_>, _> = mimes
             .into_iter()
@@ -181,6 +189,7 @@ impl Default for TikaClient {
 
 impl Drop for TikaClient {
     fn drop(&mut self) {
+        // kill the spawned server
         self.kill_server().expect(&format!(
             "Failed shutting down the Tika Server on {}",
             self.server_endpoint
@@ -188,6 +197,7 @@ impl Drop for TikaClient {
     }
 }
 
+/// Builder struct to create a `TikaClient`
 #[derive(Debug, Clone, Default)]
 pub struct TikaBuilder {
     /// how the the tika server is configured
@@ -205,6 +215,7 @@ pub struct TikaBuilder {
 }
 
 impl TikaBuilder {
+    /// Creates a new builder for the desired `tika_mode`
     pub fn new(tika_mode: TikaMode) -> Self {
         TikaBuilder {
             tika_mode,
@@ -216,38 +227,73 @@ impl TikaBuilder {
         }
     }
 
+    /// Constructs a new `TikaBuilder` in Client mode, targeting the `server_url`
+    ///
+    /// # Example
+    ///
+    /// Redirect any call to running tika server on localhost
+    /// ```edition2018
+    /// # fn main() -> rustika::Result<()> {
+    /// let client = rustika::TikaBuilder::client_only("http://localhost:9998")?.build();
+    /// # Ok(())
+    /// # }
+    /// ```
+    /// Target a remote tika server
+    ///
+    /// ```edition2018
+    /// # fn main() -> rustika::Result<()> {
+    /// let client = rustika::TikaBuilder::client_only("https://example-tika.org")?.build();
+    /// # Ok(())
+    ///  # }
+    /// ```
     pub fn client_only<U: IntoUrl>(server_url: U) -> Result<Self> {
-        Ok(TikaBuilder::new(TikaMode::ClientOnly(
-            server_url.into_url()?,
-        )))
+        Ok(TikaBuilder::new(TikaMode::client_only(server_url)?))
     }
 
+    /// Constructs a new `TikaBuilder` in ClientServer mode, to spawn a new tika server instance at `addr`
     pub fn with_server<T: AsRef<str>>(addr: T) -> Result<Self> {
         Ok(TikaBuilder::new(TikaMode::client_server(addr)?))
     }
 
+    /// The version of the tika server to download if no `TIKA_SERVER_JAR` is set.
+    /// Can be set with `TIKA_VERSION`
     pub fn version<T: Into<String>>(mut self, version: T) -> Self {
         self.tika_version = Some(version.into());
         self
     }
 
+    /// The path where tika files should be stored.
+    /// This will be a tempfile if no `TIKA_PATH` is set
     pub fn path<T: AsRef<Path>>(mut self, path: T) -> Self {
         self.tika_path = Some(path.as_ref().into());
         self
     }
 
+    /// The location of the tika server file.
+    /// If no `TIKA_SERVER_JAR` is or the `tika-rest-server` executable is not on `PATH`,
+    /// this will be a pointer to the remote download link of the tika server jar file.
     pub fn server_file(mut self, server_file: TikaServerFileLocation) -> Self {
         self.tika_server_file = server_file;
         self
     }
 
+    /// The specific tika translator class to use translate docs on the server.
+    /// By default the `org.apache.tika.language.translate.Lingo24Translator` class is configured
+    ///
+    /// # Example
+    ///
+    /// ```edition2018
+    /// let client = rustika::TikaBuilder::default().translator("org.apache.tika.language.translate.Lingo24Translator").build();
+    /// ```
     pub fn translator<T: Into<String>>(mut self, translator: T) -> Self {
         self.tika_translator = Some(translator.into());
         self
     }
 
-    pub fn server_verbosity(mut self, verbosity: Verbosity) -> Self {
-        self.server_verbosity = verbosity;
+    /// How a spawned tika server should log.
+    /// By default the server will be `Verbosity::Silent` and not log to `std::out` and `std::err`.
+    pub fn server_verbosity(mut self, server_verbosity: Verbosity) -> Self {
+        self.server_verbosity = server_verbosity;
         self
     }
 
@@ -273,6 +319,7 @@ impl TikaBuilder {
         }
     }
 
+    /// Constructs a new `TikaClient` based on its configuration
     pub fn build(self) -> TikaClient {
         let tika_version = self.tika_version.unwrap_or(TikaConfig::default_version());
         let config = TikaConfig {
@@ -295,11 +342,12 @@ impl TikaBuilder {
     }
 }
 
+/// How a spawned tika server should log to `std::out` and `std::err`
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum Verbosity {
-    /// don't log to current shell
+    /// don't log to current shell, use `Stdio::piped()` instead
     Silent,
-    /// enable logging
+    /// enable logging and print the tika server logs to `std::out`
     Verbose,
 }
 
@@ -309,6 +357,7 @@ impl Default for Verbosity {
     }
 }
 
+/// All configs of the `TikaClient`
 #[derive(Debug, Clone)]
 pub struct TikaConfig {
     /// the version of tika
@@ -326,17 +375,20 @@ pub struct TikaConfig {
 }
 
 impl TikaConfig {
+    /// The version of tika server to download if required
     #[inline]
     pub(crate) fn default_version() -> String {
         env::var("TIKA_VERSION").unwrap_or("1.20".to_string())
     }
 
+    /// The specific translator class the tika server should use to translate docs
     #[inline]
     pub(crate) fn default_translator() -> String {
         env::var("TIKA_TRANSLATOR")
             .unwrap_or("org.apache.tika.language.translate.Lingo24Translator".to_string())
     }
 
+    /// The endpoint from which the tika server jar can be downloaded
     #[inline]
     pub(crate) fn remote_server_jar(version: &str) -> String {
         format!("http://search.maven.org/remotecontent?filepath=org/apache/tika/tika-server/{}/tika-server-{}.jar", version, version)
@@ -348,8 +400,8 @@ impl Default for TikaConfig {
         let tika_version = Self::default_version();
 
         TikaConfig {
-            tika_server_file: TikaServerFileLocation::default(),
             tika_version,
+            tika_server_file: TikaServerFileLocation::default(),
             tika_path: env::temp_dir(),
             tika_mode: TikaMode::default(),
             tika_translator: Self::default_translator(),
@@ -358,6 +410,8 @@ impl Default for TikaConfig {
     }
 }
 
+/// The location of the tika server jar/exe
+/// Either a local jar or executable or a remote endpoint from which the server jar can be downloaded.
 #[derive(Debug, Clone)]
 pub enum TikaServerFileLocation {
     /// local jar or executable
@@ -406,6 +460,7 @@ impl TikaServerFile {
             _ => (),
         };
 
+        // find the `tika-rest-server` executable from `Path`
         match which::which("tika-rest-server") {
             Ok(path) => Ok(TikaServerFile::PathExecutable(path)),
             Err(_) => Err(Error::config(

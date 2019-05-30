@@ -11,9 +11,10 @@ pub mod web;
 pub use crate::client::{TikaBuilder, TikaClient};
 pub use crate::error::Result;
 
-use reqwest::Url;
+use reqwest::{IntoUrl, Url};
 use std::net;
 
+/// Indicates whether a tika server instance should spawned or is already running
 #[derive(Debug, Clone)]
 pub enum TikaMode {
     /// also start the tika server and bind it to the address
@@ -24,16 +25,23 @@ pub enum TikaMode {
 }
 
 impl TikaMode {
+    /// A tika server should be spawned at a local address
     #[inline]
     pub fn client_server<T: AsRef<str>>(addr: T) -> Result<Self> {
         Ok(TikaMode::ClientServer(addr.as_ref().parse()?))
     }
 
+    /// the url of the tika server, either local and self hosted or remote
     pub fn server_endpoint(&self) -> Url {
         match self {
             TikaMode::ClientServer(addr) => Url::parse(&format!("http://{}", addr)).unwrap(),
             TikaMode::ClientOnly(url) => url.clone(),
         }
+    }
+
+    /// Creates a `TikaMode::ClientOnly` with the desired `server_url` as tika server endpoint
+    pub fn client_only<U: IntoUrl>(server_url: U) -> Result<Self> {
+        Ok(TikaMode::ClientOnly(server_url.into_url()?))
     }
 }
 

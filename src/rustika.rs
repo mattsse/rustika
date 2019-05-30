@@ -1,4 +1,4 @@
-use rustika::client::{TikaServerJar, Verbosity};
+use rustika::client::{TikaServerFile, Verbosity};
 use rustika::web::config::Config;
 use rustika::web::response::ServerConfig;
 use rustika::{Result, TikaBuilder, TikaClient};
@@ -37,13 +37,14 @@ enum Parse {
 }
 
 fn server_demo() -> Result<()> {
-    let mut client = TikaClient::default();
+    let mut client = TikaBuilder::default()
+        .server_verbosity(Verbosity::Verbose)
+        .start_server()?;
 
-    let jar = TikaServerJar::from_env()?;
-    let addr = net::SocketAddr::new(net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)), 9998);
-    let handle = jar.start_server(&addr, Verbosity::Silent)?;
+    //    let addr = net::SocketAddr::new(net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1)), 9998);
+    //    let handle = jar.start_server(&addr, Verbosity::Silent)?;
 
-    client.server_handle = Some(handle);
+    //    client.server_handle = Some(handle);
 
     //    let target = client.download_server_jar().expect("Failed to download");
     //
@@ -63,7 +64,7 @@ fn main() -> Result<()> {
     pretty_env_logger::init();
     //    let app = App::from_args();
 
-    //    println!("{:?}", which::which("java").unwrap());
+    //        println!("{:?}", which::which("tika-rest-server").unwrap());
 
     server_demo();
 
