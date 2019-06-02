@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
 use crate::web::config::{Config, Detector, MimeType, MimeTypeInner, Parser};
+use crate::web::translate::{Language, Translator};
 use crate::TikaMode;
-use reqwest::{self, IntoUrl, Request, Response, Url};
+use reqwest::{self, Body, IntoUrl, Request, Response, Url};
 use serde::export::Option::Some;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -91,6 +92,39 @@ impl TikaClient {
         }
     }
 
+    /// downloads the tika server jar
+    pub(crate) fn download_server_jar(&mut self) -> Result<&TikaServerFile> {
+        debug!("Fetching tika server jar file.");
+        let mut resp = self
+            .client
+            .get(&TikaConfig::remote_server_jar(&self.config.tika_version))
+            .send()?;
+        let server_jar = self.config.tika_path.join("tika-server.jar");
+
+        if cfg!(feature = "cli") {
+            // TODO add cli print loop for feature cli
+
+        }
+
+        let mut out = fs::File::create(&server_jar)?;
+        debug!("Downloading tika server jar to {}", server_jar.display());
+        let written = std::io::copy(&mut resp, &mut out)?;
+
+        debug!(
+            "Finished download to {} with size {}.",
+            server_jar.display(),
+            written
+        );
+
+        self.config.tika_server_file =
+            TikaServerFileLocation::File(TikaServerFile::Download(server_jar));
+
+        match &self.config.tika_server_file {
+            TikaServerFileLocation::File(file) => Ok(file),
+            _ => unreachable!(),
+        }
+    }
+
     /// the endpoint of the tika server
     pub fn server_endpoint(&self) -> &Url {
         &self.server_endpoint
@@ -112,6 +146,7 @@ impl TikaClient {
     }
 
     /// sends a GET request to the `tika_url` with the `Accept` header set to `application/json`
+    #[inline]
     pub fn get_json(&self, path: &str) -> Result<Response> {
         Ok(self
             .client
@@ -169,36 +204,66 @@ impl TikaClient {
         Ok(mimes?)
     }
 
-    /// downloads the tika server jar
-    pub(crate) fn download_server_jar(&mut self) -> Result<&TikaServerFile> {
-        debug!("Fetching tika server jar file.");
+    ///  Translates the content of source file to destination language
+    pub fn translate(&self) -> Result<()> {
+        unimplemented!()
+    }
+
+    /// Detects MIME type of the content.
+    /// The resulting mime type will only include the `identifier` field
+    /// A empty body will result in a `application/octet-stream` mime type.
+    ///
+    /// # Example
+    ///
+    /// Detect the mime type of a file
+    ///
+    /// ```edition2018
+    /// # use rustika::TikaClient;
+    /// # fn run() -> rustika::Result<()> {
+    /// let client = TikaClient::default();
+    /// let mime_type = client.detect_mime(::std::fs::read("Cargo.toml")?)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn detect_mime<T: Into<Body>>(&self, content: T) -> Result<MimeType> {
         let mut resp = self
             .client
-            .get(&TikaConfig::remote_server_jar(&self.config.tika_version))
+            .put(self.endpoint_url("detect/stream")?)
+            .header(reqwest::header::ACCEPT, "text/plain")
+            .body(content.into())
             .send()?;
-        let server_jar = self.config.tika_path.join("tika-server.jar");
+        Ok(MimeType::new(resp.text()?))
+    }
 
-        if cfg!(feature = "cli") {
-            // TODO add cli print loop for feature cli
-
-        }
-
-        let mut out = fs::File::create(&server_jar)?;
-        debug!("Downloading tika server jar to {}", server_jar.display());
-        let written = std::io::copy(&mut resp, &mut out)?;
-
-        debug!(
-            "Finished download to {} with size {}.",
-            server_jar.display(),
-            written
-        );
-
-        self.config.tika_server_file =
-            TikaServerFileLocation::File(TikaServerFile::Download(server_jar));
-
-        match &self.config.tika_server_file {
-            TikaServerFileLocation::File(file) => Ok(file),
-            _ => unreachable!(),
+    /// Detects the language of the content
+    /// A empty body will result in a empty response that is treated as an error.
+    ///
+    /// # Example
+    ///
+    /// Detect the language type of a file
+    ///
+    /// ```edition2018
+    /// # use rustika::TikaClient;
+    /// # fn run() -> rustika::Result<()> {
+    /// let client = TikaClient::default();
+    /// let mime_type = client.detect_language(::std::fs::read("Cargo.toml")?)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn detect_language<T: Into<Body>>(&self, content: T) -> Result<Language> {
+        let mut resp = self
+            .client
+            .put(self.endpoint_url("language/stream")?)
+            .header(reqwest::header::ACCEPT, "text/plain")
+            .body(content.into())
+            .send()?;
+        let lang = resp.text()?;
+        if lang.is_empty() {
+            Err(Error::server(
+                "Failed to detect language. Got empty response.",
+            ))
+        } else {
+            Ok(Language(lang))
         }
     }
 }
@@ -231,7 +296,7 @@ pub struct TikaBuilder {
     /// path to the tika server jar file
     pub tika_server_file: TikaServerFileLocation,
     /// translator class used to translate docs
-    pub tika_translator: Option<String>,
+    pub tika_translator: Option<Translator>,
     /// whether the tika server should log to std::out
     pub server_verbosity: Verbosity,
 }
@@ -308,7 +373,7 @@ impl TikaBuilder {
     /// let client = rustika::TikaBuilder::default().translator("org.apache.tika.language.translate.Lingo24Translator").build();
     /// ```
     pub fn translator<T: Into<String>>(mut self, translator: T) -> Self {
-        self.tika_translator = Some(translator.into());
+        self.tika_translator = Some(Translator::Other(translator.into()));
         self
     }
 
@@ -377,7 +442,7 @@ pub struct TikaConfig {
     /// how the the tika server is configured
     pub tika_mode: TikaMode,
     /// translator class used to translate docs
-    pub tika_translator: String,
+    pub tika_translator: Translator,
     /// whether the tika server should log to std::out
     pub server_verbosity: Verbosity,
 }
@@ -391,9 +456,10 @@ impl TikaConfig {
 
     /// The specific translator class the tika server should use to translate docs
     #[inline]
-    pub(crate) fn default_translator() -> String {
+    pub(crate) fn default_translator() -> Translator {
         env::var("TIKA_TRANSLATOR")
-            .unwrap_or("org.apache.tika.language.translate.Lingo24Translator".to_string())
+            .map(|x| Translator::Other(x))
+            .unwrap_or(Translator::default())
     }
 
     /// The endpoint from which the tika server jar can be downloaded

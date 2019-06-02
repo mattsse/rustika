@@ -42,6 +42,17 @@ pub struct MimeType {
     pub parser: Option<String>,
 }
 
+impl MimeType {
+    pub fn new<T: Into<String>>(identifier: T) -> Self {
+        MimeType {
+            identifier: identifier.into(),
+            supertype: None,
+            alias: Vec::new(),
+            parser: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MimeTypeInner {
     pub supertype: Option<String>,

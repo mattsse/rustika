@@ -37,15 +37,20 @@ enum Parse {
 }
 
 fn main() -> Result<()> {
+    use std::fs;
     use which;
     pretty_env_logger::init();
     //    let app = App::from_args();
 
     let client = TikaBuilder::client_only("http://localhost:9998")?.build();
     //        println!("{:?}", which::which("tika-rest-server").unwrap());
+    let content = fs::read("Cargo.toml")?;
+    println!("{:?}", content.len());
+    let mime = client.detect_language(content);
 
-    println!("{:#?}", client.parsers_details()?);
-//    std::thread::sleep(std::time::Duration::from_secs(45));
+    println!("{:?}", mime);
+
+    //    std::thread::sleep(std::time::Duration::from_secs(45));
 
     Ok(())
 }

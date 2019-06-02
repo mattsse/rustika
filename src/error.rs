@@ -1,7 +1,7 @@
 use failure::{Backtrace, Context, Fail};
 use std::{fmt, result};
 
-/// A type alias for handling errors throughout crossref.
+/// A type alias for handling errors throughout rustika.
 pub type Result<T> = result::Result<T, Error>;
 
 /// An error that can occur while interacting while handling rustika.
@@ -25,7 +25,7 @@ impl Error {
 }
 
 impl Fail for Error {
-    fn cause(&self) -> Option<&Fail> {
+    fn cause(&self) -> Option<&dyn Fail> {
         self.ctx.cause()
     }
 
