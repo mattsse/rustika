@@ -1,5 +1,30 @@
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct Language(pub String);
+
+impl Language {
+    pub fn en() -> Self {
+        "en".into()
+    }
+
+    pub fn de() -> Self {
+        "de".into()
+    }
+
+    pub fn it() -> Self {
+        "it".into()
+    }
+
+    pub fn fr() -> Self {
+        "fr".into()
+    }
+}
+
+impl<T: ToString> From<T> for Language {
+    fn from(lang: T) -> Self {
+        Language(lang.to_string())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Translation {
@@ -23,6 +48,7 @@ impl Translator {
         Translator::Other(jvm_pkg_name.into())
     }
 
+    /// the full java class name of the translator
     pub fn as_str(&self) -> &str {
         match self {
             Translator::Lingo24 => "org.apache.tika.language.translate.Lingo24Translator",

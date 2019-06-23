@@ -81,6 +81,7 @@ impl TikaClient {
         }
     }
 
+    /// restart the server and use a a different local address, if supplied
     pub fn restart_server(&mut self, addr: Option<SocketAddr>) -> Result<()> {
         let _ = self.stop_server()?;
         if let Some(addr) = addr {
@@ -123,11 +124,6 @@ impl TikaClient {
             .get(&TikaConfig::remote_server_jar(&self.config.tika_version))
             .send()?;
         let server_jar = self.config.tika_path.join("tika-server.jar");
-
-        if cfg!(feature = "cli") {
-            // TODO add cli print loop for feature cli
-
-        }
 
         let mut out = fs::File::create(&server_jar)?;
         debug!("Downloading tika server jar to {}", server_jar.display());
@@ -227,9 +223,77 @@ impl TikaClient {
         Ok(mimes?)
     }
 
-    ///  Translates the content of source file to destination language
-    pub fn translate(&self) -> Result<()> {
-        unimplemented!()
+    ///  Translates the content of to destination language by auto detecting the source language using the configured translator
+    pub fn translate_auto<T: Into<Body>, D: Into<Language>>(
+        &self,
+        content: T,
+        dest_lang: D,
+    ) -> Result<String> {
+        self.put_translate(
+            content,
+            None,
+            dest_lang.into(),
+            &self.config.tika_translator,
+        )
+    }
+
+    ///  Translates the content of source file from src language to destination language using the configured translator
+    pub fn translate<T: Into<Body>, S: Into<Language>, D: Into<Language>>(
+        &self,
+        content: T,
+        src_lang: S,
+        dest_lang: D,
+    ) -> Result<String> {
+        self.put_translate(
+            content,
+            Some(src_lang.into()),
+            dest_lang.into(),
+            &self.config.tika_translator,
+        )
+    }
+    ///  Translates the content of source file from src language to destination language
+    /// using a specific translator
+    pub fn translate_with_translator<T: Into<Body>, S: Into<Language>, D: Into<Language>>(
+        &self,
+        content: T,
+        src_lang: S,
+        dest_lang: D,
+        translator: &Translator,
+    ) -> Result<String> {
+        self.put_translate(content, Some(src_lang.into()), dest_lang.into(), translator)
+    }
+
+    ///  Translates the content of source file to destination language by auto detecting the source language
+    /// using a specific translator
+    pub fn translate_with_translator_auto<T: Into<Body>, S: Into<Language>, D: Into<Language>>(
+        &self,
+        content: T,
+        dest_lang: D,
+        translator: &Translator,
+    ) -> Result<String> {
+        self.put_translate(content, None, dest_lang.into(), translator)
+    }
+
+    fn put_translate<T: Into<Body>>(
+        &self,
+        content: T,
+        src_lang: Option<Language>,
+        dest_lang: Language,
+        translator: &Translator,
+    ) -> Result<String> {
+        let mut path = format!("translate/all/{}/", translator.as_str());
+        if let Some(src_lang) = src_lang {
+            path = format!("{}{}/", path, src_lang.0);
+        }
+        path += &dest_lang.0;
+
+        let mut resp = self
+            .client
+            .put(self.endpoint_url(path)?)
+            .header(reqwest::header::ACCEPT, "text/plain")
+            .body(content.into())
+            .send()?;
+        Ok(resp.text()?)
     }
 
     /// Detects MIME type of the content.
@@ -286,7 +350,7 @@ impl TikaClient {
                 "Failed to detect language. Got empty response.",
             ))
         } else {
-            Ok(Language(lang))
+            Ok(lang.into())
         }
     }
 }
@@ -390,13 +454,8 @@ impl TikaBuilder {
     /// The specific tika translator class to use translate docs on the server.
     /// By default the `org.apache.tika.language.translate.Lingo24Translator` class is configured
     ///
-    /// # Example
-    ///
-    /// ```edition2018
-    /// let client = rustika::TikaBuilder::default().translator("org.apache.tika.language.translate.Lingo24Translator").build();
-    /// ```
-    pub fn translator<T: Into<String>>(mut self, translator: T) -> Self {
-        self.tika_translator = Some(Translator::Other(translator.into()));
+    pub fn translator<T: Into<Translator>>(mut self, translator: T) -> Self {
+        self.tika_translator = Some(translator.into());
         self
     }
 

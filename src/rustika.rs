@@ -2,6 +2,7 @@ use rustika::client::Verbosity::Verbose;
 use rustika::client::{TikaServerFile, Verbosity};
 use rustika::web::config::Config;
 use rustika::web::response::ServerConfig;
+use rustika::web::translate::{Language, Translator};
 use rustika::{Result, TikaBuilder, TikaClient};
 use std::net;
 use std::path::PathBuf;
@@ -45,13 +46,17 @@ fn main() -> Result<()> {
 
     //    let client = TikaBuilder::client_only("http://localhost:9998")?.build();
 
-    let client = TikaBuilder::default().start_server()?;
+    let client = TikaBuilder::default()
+        .translator(Translator::Google)
+        .start_server()?;
     //        println!("{:?}", which::which("tika-rest-server").unwrap());
     let content = fs::read("Cargo.toml")?;
-    println!("{:?}", content.len());
-    let mime = client.detect_language(content);
+    //    println!("{:?}", content.len());
+    //    let mime = client.detect_language(content);
 
-    println!("{:?}", mime);
+    let val = client.translate("bonjour mon ami!", "fr", "en");
+
+    println!("{:?}", val);
 
     //    std::thread::sleep(std::time::Duration::from_secs(45));
 
