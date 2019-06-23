@@ -1,3 +1,4 @@
+use rustika::client::Verbosity::Verbose;
 use rustika::client::{TikaServerFile, Verbosity};
 use rustika::web::config::Config;
 use rustika::web::response::ServerConfig;
@@ -42,7 +43,9 @@ fn main() -> Result<()> {
     pretty_env_logger::init();
     //    let app = App::from_args();
 
-    let client = TikaBuilder::client_only("http://localhost:9998")?.build();
+    //    let client = TikaBuilder::client_only("http://localhost:9998")?.build();
+
+    let client = TikaBuilder::default().start_server()?;
     //        println!("{:?}", which::which("tika-rest-server").unwrap());
     let content = fs::read("Cargo.toml")?;
     println!("{:?}", content.len());

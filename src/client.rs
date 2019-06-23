@@ -3,7 +3,7 @@ use crate::web::config::{Config, Detector, MimeType, MimeTypeInner, Parser};
 use crate::web::translate::{Language, Translator};
 use crate::TikaMode;
 use reqwest::{self, Body, IntoUrl, Request, Response, Url};
-use serde::export::Option::Some;
+use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -41,14 +41,37 @@ impl TikaClient {
     /// starts a local server instance
     pub fn start_server(&mut self) -> Result<()> {
         if let TikaMode::ClientServer(addr) = self.config.tika_mode {
-            let verbosity = self.config.server_verbosity;
-
             let server_file = match self.config.tika_server_file {
                 TikaServerFileLocation::Remote(_) => self.download_server_jar()?,
                 TikaServerFileLocation::File(ref file) => file,
             };
 
-            let handle = server_file.start_server(&addr, verbosity)?;
+            let mut handle = server_file.start_server(&addr)?;
+
+            let stderr = handle
+                .stderr
+                .as_mut()
+                .ok_or(Error::config("Failed to read tika server logs"))?;
+
+            let reader = BufReader::new(stderr);
+
+            // wait until the tika server is launched, which is indicated by a log message
+            for line in reader.lines() {
+                let line = line?;
+                if self.config.server_verbosity == Verbosity::Verbose {
+                    println!("{}", line);
+                }
+                if line.starts_with("INFO  Started Apache Tika server at") {
+                    break;
+                }
+            }
+
+            // remove output pipes if verbose logging is configured
+            if self.config.server_verbosity == Verbosity::Verbose {
+                handle.stderr.take();
+                handle.stdout.take();
+            }
+
             self.server_handle = Some(handle);
             Ok(())
         } else {
@@ -558,11 +581,7 @@ impl TikaServerFile {
     }
 
     /// starts a new server instance and returns the handle to the spawned process
-    pub(crate) fn start_server(
-        &self,
-        addr: &SocketAddr,
-        server_verbosity: Verbosity,
-    ) -> Result<Child> {
+    pub(crate) fn start_server(&self, addr: &SocketAddr) -> Result<Child> {
         debug!("launching tika server from {}", self.location().display());
         let mut cmd = match self {
             TikaServerFile::PathExecutable(path) => Command::new(path),
@@ -579,13 +598,11 @@ impl TikaServerFile {
         cmd.arg("--host")
             .arg(addr.ip().to_string())
             .arg("--port")
-            .arg(addr.port().to_string());
+            .arg(addr.port().to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         debug!("Spawning {:?}", cmd);
-
-        if server_verbosity == Verbosity::Silent {
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        }
 
         Ok(cmd.spawn()?)
     }
