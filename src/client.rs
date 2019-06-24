@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::web::config::{Config, Detector, MimeType, MimeTypeInner, Parser};
-use crate::web::translate::{Language, Translator};
+use crate::web::translate::{Language, Translation, Translator, TranslatorProperties};
 use crate::TikaMode;
 use reqwest::{self, Body, IntoUrl, Request, Response, Url};
 use std::io::{BufRead, BufReader};
@@ -41,12 +41,18 @@ impl TikaClient {
     /// starts a local server instance
     pub fn start_server(&mut self) -> Result<()> {
         if let TikaMode::ClientServer(addr) = self.config.tika_mode {
+            let translate_keys = if let Some(props) = &self.config.tika_translator_props {
+                Some(props.dir(&self.config.tika_path)?)
+            } else {
+                None
+            };
+
             let server_file = match self.config.tika_server_file {
                 TikaServerFileLocation::Remote(_) => self.download_server_jar()?,
                 TikaServerFileLocation::File(ref file) => file,
             };
 
-            let mut handle = server_file.start_server(&addr)?;
+            let mut handle = server_file.start_server(&addr, translate_keys)?;
 
             let stderr = handle
                 .stderr
@@ -228,7 +234,7 @@ impl TikaClient {
         &self,
         content: T,
         dest_lang: D,
-    ) -> Result<String> {
+    ) -> Result<Translation> {
         self.put_translate(
             content,
             None,
@@ -243,7 +249,7 @@ impl TikaClient {
         content: T,
         src_lang: S,
         dest_lang: D,
-    ) -> Result<String> {
+    ) -> Result<Translation> {
         self.put_translate(
             content,
             Some(src_lang.into()),
@@ -259,7 +265,7 @@ impl TikaClient {
         src_lang: S,
         dest_lang: D,
         translator: &Translator,
-    ) -> Result<String> {
+    ) -> Result<Translation> {
         self.put_translate(content, Some(src_lang.into()), dest_lang.into(), translator)
     }
 
@@ -270,7 +276,7 @@ impl TikaClient {
         content: T,
         dest_lang: D,
         translator: &Translator,
-    ) -> Result<String> {
+    ) -> Result<Translation> {
         self.put_translate(content, None, dest_lang.into(), translator)
     }
 
@@ -280,9 +286,9 @@ impl TikaClient {
         src_lang: Option<Language>,
         dest_lang: Language,
         translator: &Translator,
-    ) -> Result<String> {
+    ) -> Result<Translation> {
         let mut path = format!("translate/all/{}/", translator.as_str());
-        if let Some(src_lang) = src_lang {
+        if let Some(src_lang) = &src_lang {
             path = format!("{}{}/", path, src_lang.0);
         }
         path += &dest_lang.0;
@@ -293,7 +299,11 @@ impl TikaClient {
             .header(reqwest::header::ACCEPT, "text/plain")
             .body(content.into())
             .send()?;
-        Ok(resp.text()?)
+        Ok(Translation {
+            content: resp.text()?,
+            src_lang,
+            dest_lang,
+        })
     }
 
     /// Detects MIME type of the content.
@@ -365,42 +375,16 @@ impl Drop for TikaClient {
     fn drop(&mut self) {
         // kill the spawned server
         self.stop_server().expect(&format!(
-            "Failed shutting down the Tika Server on {}",
+            "Failed to shut down the Tika Server running on {}",
             self.server_endpoint
         ));
     }
 }
 
-/// Builder struct to create a `TikaClient`
-#[derive(Debug, Clone, Default)]
-pub struct TikaBuilder {
-    /// how the the tika server is configured
-    pub tika_mode: TikaMode,
-    /// the version of tika
-    pub tika_version: Option<String>,
-    /// the path where to store installation and files
-    pub tika_path: Option<PathBuf>,
-    /// path to the tika server jar file
-    pub tika_server_file: TikaServerFileLocation,
-    /// translator class used to translate docs
-    pub tika_translator: Option<Translator>,
-    /// whether the tika server should log to std::out
-    pub server_verbosity: Verbosity,
-}
+/// type alias for building a client from a config
+pub type TikaBuilder = TikaConfig;
 
 impl TikaBuilder {
-    /// Creates a new builder for the desired `tika_mode`
-    pub fn new(tika_mode: TikaMode) -> Self {
-        TikaBuilder {
-            tika_mode,
-            tika_version: None,
-            tika_path: None,
-            tika_server_file: TikaServerFileLocation::default(),
-            tika_translator: None,
-            server_verbosity: Verbosity::default(),
-        }
-    }
-
     /// Constructs a new `TikaBuilder` in Client mode, targeting the `server_url`
     ///
     /// # Example
@@ -432,14 +416,14 @@ impl TikaBuilder {
     /// The version of the tika server to download if no `TIKA_SERVER_JAR` is set.
     /// Can be set with `TIKA_VERSION`
     pub fn version<T: Into<String>>(mut self, version: T) -> Self {
-        self.tika_version = Some(version.into());
+        self.tika_version = version.into();
         self
     }
 
     /// The path where tika files should be stored.
     /// This will be a tempfile if no `TIKA_PATH` is set
     pub fn path<T: AsRef<Path>>(mut self, path: T) -> Self {
-        self.tika_path = Some(path.as_ref().into());
+        self.tika_path = path.as_ref().into();
         self
     }
 
@@ -455,7 +439,7 @@ impl TikaBuilder {
     /// By default the `org.apache.tika.language.translate.Lingo24Translator` class is configured
     ///
     pub fn translator<T: Into<Translator>>(mut self, translator: T) -> Self {
-        self.tika_translator = Some(translator.into());
+        self.tika_translator = translator.into();
         self
     }
 
@@ -476,23 +460,13 @@ impl TikaBuilder {
 
     /// Constructs a new `TikaClient` based on its configuration
     pub fn build(self) -> TikaClient {
-        let tika_version = self.tika_version.unwrap_or(TikaConfig::default_version());
-        let config = TikaConfig {
-            tika_server_file: TikaServerFileLocation::default(),
-            tika_version,
-            tika_path: self.tika_path.unwrap_or(env::temp_dir()),
-            tika_mode: self.tika_mode,
-            tika_translator: self
-                .tika_translator
-                .unwrap_or(TikaConfig::default_translator()),
-            server_verbosity: self.server_verbosity,
-        };
+        let server_endpoint = self.tika_mode.server_endpoint();
 
         TikaClient {
             client: reqwest::Client::new(),
-            server_endpoint: config.tika_mode.server_endpoint(),
+            server_endpoint,
             server_handle: None,
-            config,
+            config: self,
         }
     }
 }
@@ -527,9 +501,26 @@ pub struct TikaConfig {
     pub tika_translator: Translator,
     /// whether the tika server should log to std::out
     pub server_verbosity: Verbosity,
+    /// the api keys for the translation services
+    pub tika_translator_props: Option<TranslatorProperties>,
 }
 
 impl TikaConfig {
+    /// Creates a new builder for the desired `tika_mode`
+    pub fn new(tika_mode: TikaMode) -> Self {
+        TikaConfig {
+            tika_version: Self::default_version(),
+            tika_server_file: TikaServerFileLocation::default(),
+            tika_path: env::var("TIKA_PATH")
+                .map(|x| Path::new(&x).into())
+                .unwrap_or(env::temp_dir()),
+            tika_mode: TikaMode::default(),
+            tika_translator: Self::default_translator(),
+            server_verbosity: Verbosity::default(),
+            tika_translator_props: None,
+        }
+    }
+
     /// The version of tika server to download if required
     #[inline]
     pub(crate) fn default_version() -> String {
@@ -553,16 +544,7 @@ impl TikaConfig {
 
 impl Default for TikaConfig {
     fn default() -> Self {
-        let tika_version = Self::default_version();
-
-        TikaConfig {
-            tika_version,
-            tika_server_file: TikaServerFileLocation::default(),
-            tika_path: env::temp_dir(),
-            tika_mode: TikaMode::default(),
-            tika_translator: Self::default_translator(),
-            server_verbosity: Verbosity::Silent,
-        }
+        Self::new(TikaMode::default())
     }
 }
 
@@ -640,16 +622,24 @@ impl TikaServerFile {
     }
 
     /// starts a new server instance and returns the handle to the spawned process
-    pub(crate) fn start_server(&self, addr: &SocketAddr) -> Result<Child> {
+    pub(crate) fn start_server<P: AsRef<Path>>(
+        &self,
+        addr: &SocketAddr,
+        translate_keys: Option<P>,
+    ) -> Result<Child> {
         debug!("launching tika server from {}", self.location().display());
         let mut cmd = match self {
             TikaServerFile::PathExecutable(path) => Command::new(path),
             TikaServerFile::EnvVarJar(path) | TikaServerFile::Download(path) => {
                 let java_path = which::which("java").expect("Failed to locate java in PATH.");
                 let mut cmd = Command::new(java_path);
-                cmd.arg("-cp")
-                    .arg(path)
-                    .arg("org.apache.tika.server.TikaServerCli");
+                cmd.arg("-cp");
+
+                if let Some(translate_keys) = translate_keys {
+                    cmd.arg(translate_keys.as_ref()).arg(":");
+                }
+
+                cmd.arg(path).arg("org.apache.tika.server.TikaServerCli");
                 cmd
             }
         };
