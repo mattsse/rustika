@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
 use crate::web::config::{Config, Detector, MimeType, MimeTypeInner, Parser};
-use crate::web::translate::{Language, Translation, Translator, TranslatorProperties};
+use crate::web::translate::{
+    Language, Translation, Translator, TranslatorKey, TranslatorProperties,
+};
 use crate::TikaMode;
 use reqwest::{self, Body, IntoUrl, Request, Response, Url};
 use std::io::{BufRead, BufReader};
@@ -28,13 +30,13 @@ impl Default for ServerPolicy {
 #[derive(Debug)]
 pub struct TikaClient {
     /// configuration of the tika server
-    config: TikaConfig,
+    pub config: TikaConfig,
     /// endpoint of the tika server
     server_endpoint: Url,
     /// handle to the spawned tika server
     server_handle: Option<Child>,
     /// inner client to execute http requests
-    pub(crate) client: reqwest::Client,
+    client: reqwest::Client,
 }
 
 impl TikaClient {
@@ -42,7 +44,7 @@ impl TikaClient {
     pub fn start_server(&mut self) -> Result<()> {
         if let TikaMode::ClientServer(addr) = self.config.tika_mode {
             let translate_keys = if let Some(props) = &self.config.tika_translator_props {
-                Some(props.dir(&self.config.tika_path)?)
+                Some(props.property_dir(&self.config.tika_path)?)
             } else {
                 None
             };
@@ -57,7 +59,7 @@ impl TikaClient {
             let stderr = handle
                 .stderr
                 .as_mut()
-                .ok_or(Error::config("Failed to read tika server logs"))?;
+                .ok_or_else(|| Error::config("Failed to read tika server logs"))?;
 
             let reader = BufReader::new(stderr);
 
@@ -89,7 +91,7 @@ impl TikaClient {
 
     /// restart the server and use a a different local address, if supplied
     pub fn restart_server(&mut self, addr: Option<SocketAddr>) -> Result<()> {
-        let _ = self.stop_server()?;
+        self.stop_server()?;
         if let Some(addr) = addr {
             self.config.tika_mode = TikaMode::ClientServer(addr);
             self.server_endpoint = self.config.tika_mode.server_endpoint();
@@ -374,10 +376,89 @@ impl Default for TikaClient {
 impl Drop for TikaClient {
     fn drop(&mut self) {
         // kill the spawned server
-        self.stop_server().expect(&format!(
-            "Failed to shut down the Tika Server running on {}",
-            self.server_endpoint
-        ));
+        self.stop_server().unwrap_or_else(|_| {
+            panic!(
+                "Failed to shut down the Tika Server running on {}",
+                self.server_endpoint
+            )
+        });
+    }
+}
+
+/// How a spawned tika server should log to `std::out` and `std::err`
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
+pub enum Verbosity {
+    /// don't log to current shell, use `Stdio::piped()` instead
+    Silent,
+    /// enable logging and print the tika server logs to `std::out`
+    Verbose,
+}
+
+impl Default for Verbosity {
+    fn default() -> Self {
+        Verbosity::Silent
+    }
+}
+
+/// All configs of the `TikaClient`
+#[derive(Debug, Clone)]
+pub struct TikaConfig {
+    /// the version of tika
+    pub tika_version: String,
+    /// the path where to store installation and files
+    pub tika_path: PathBuf,
+    /// path to the tika server jar
+    pub tika_server_file: TikaServerFileLocation,
+    /// how the the tika server is configured
+    pub tika_mode: TikaMode,
+    /// translator class used to translate docs
+    pub tika_translator: Translator,
+    /// whether the tika server should log to std::out
+    pub server_verbosity: Verbosity,
+    /// the api keys for the translation services
+    pub tika_translator_props: Option<TranslatorProperties>,
+}
+
+impl TikaConfig {
+    /// Creates a new builder for the desired `tika_mode`
+    pub fn new(_tika_mode: TikaMode) -> Self {
+        TikaConfig {
+            tika_version: Self::default_version(),
+            tika_server_file: TikaServerFileLocation::default(),
+            tika_path: env::var("TIKA_PATH")
+                .map(|x| Path::new(&x).into())
+                .unwrap_or_else(|_| env::temp_dir()),
+            tika_mode: TikaMode::default(),
+            tika_translator: Self::default_translator(),
+            server_verbosity: Verbosity::default(),
+            tika_translator_props: None,
+        }
+    }
+
+    /// The version of tika server to download if required
+    #[inline]
+    pub(crate) fn default_version() -> String {
+        env::var("TIKA_VERSION").unwrap_or_else(|_| "1.20".to_string())
+    }
+
+    /// The specific translator class the tika server should use to translate docs
+    #[inline]
+    pub(crate) fn default_translator() -> Translator {
+        env::var("TIKA_TRANSLATOR")
+            .map(Translator::Other)
+            .unwrap_or_default()
+    }
+
+    /// The endpoint from which the tika server jar can be downloaded
+    #[inline]
+    pub(crate) fn remote_server_jar(version: &str) -> String {
+        format!("http://search.maven.org/remotecontent?filepath=org/apache/tika/tika-server/{}/tika-server-{}.jar", version, version)
+    }
+}
+
+impl Default for TikaConfig {
+    fn default() -> Self {
+        Self::new(TikaMode::default())
     }
 }
 
@@ -450,6 +531,23 @@ impl TikaBuilder {
         self
     }
 
+    /// sets the directory path to the property files for the translators
+    pub fn set_translator_dir<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.tika_translator_props = Some(TranslatorProperties::Dir(path.as_ref().into()));
+        self
+    }
+
+    /// use an additional `TranslatorKey` to the class path of the server
+    /// if a directory was set beforehand, only `TranslatorKey`s will be considered
+    pub fn add_translator_key(mut self, key: TranslatorKey) -> Self {
+        if let Some(TranslatorProperties::Keys(keys)) = self.tika_translator_props.as_mut() {
+            keys.push(key);
+        } else {
+            self.tika_translator_props = Some(TranslatorProperties::Keys(vec![key]));
+        }
+        self
+    }
+
     /// creates a new `TikaClient` and starts the server
     /// if no server file is available, it downloads it first
     pub fn start_server(self) -> Result<TikaClient> {
@@ -468,83 +566,6 @@ impl TikaBuilder {
             server_handle: None,
             config: self,
         }
-    }
-}
-
-/// How a spawned tika server should log to `std::out` and `std::err`
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub enum Verbosity {
-    /// don't log to current shell, use `Stdio::piped()` instead
-    Silent,
-    /// enable logging and print the tika server logs to `std::out`
-    Verbose,
-}
-
-impl Default for Verbosity {
-    fn default() -> Self {
-        Verbosity::Silent
-    }
-}
-
-/// All configs of the `TikaClient`
-#[derive(Debug, Clone)]
-pub struct TikaConfig {
-    /// the version of tika
-    pub tika_version: String,
-    /// the path where to store installation and files
-    pub tika_path: PathBuf,
-    /// path to the tika server jar
-    pub tika_server_file: TikaServerFileLocation,
-    /// how the the tika server is configured
-    pub tika_mode: TikaMode,
-    /// translator class used to translate docs
-    pub tika_translator: Translator,
-    /// whether the tika server should log to std::out
-    pub server_verbosity: Verbosity,
-    /// the api keys for the translation services
-    pub tika_translator_props: Option<TranslatorProperties>,
-}
-
-impl TikaConfig {
-    /// Creates a new builder for the desired `tika_mode`
-    pub fn new(tika_mode: TikaMode) -> Self {
-        TikaConfig {
-            tika_version: Self::default_version(),
-            tika_server_file: TikaServerFileLocation::default(),
-            tika_path: env::var("TIKA_PATH")
-                .map(|x| Path::new(&x).into())
-                .unwrap_or(env::temp_dir()),
-            tika_mode: TikaMode::default(),
-            tika_translator: Self::default_translator(),
-            server_verbosity: Verbosity::default(),
-            tika_translator_props: None,
-        }
-    }
-
-    /// The version of tika server to download if required
-    #[inline]
-    pub(crate) fn default_version() -> String {
-        env::var("TIKA_VERSION").unwrap_or("1.20".to_string())
-    }
-
-    /// The specific translator class the tika server should use to translate docs
-    #[inline]
-    pub(crate) fn default_translator() -> Translator {
-        env::var("TIKA_TRANSLATOR")
-            .map(|x| Translator::Other(x))
-            .unwrap_or(Translator::default())
-    }
-
-    /// The endpoint from which the tika server jar can be downloaded
-    #[inline]
-    pub(crate) fn remote_server_jar(version: &str) -> String {
-        format!("http://search.maven.org/remotecontent?filepath=org/apache/tika/tika-server/{}/tika-server-{}.jar", version, version)
-    }
-}
-
-impl Default for TikaConfig {
-    fn default() -> Self {
-        Self::new(TikaMode::default())
     }
 }
 
@@ -591,20 +612,22 @@ impl TikaServerFile {
     pub fn from_env() -> Result<Self> {
         match env::var("TIKA_SERVER_JAR").map(PathBuf::from) {
             Ok(path) => return Ok(TikaServerFile::EnvVarJar(path)),
-            Err(env::VarError::NotUnicode(var)) => Err(()).expect(&format!(
+            Err(env::VarError::NotUnicode(var)) => panic!(
                 "TIKA_SERVER_JAR env var found but did not contain valid unicode {:?}",
                 var
-            )),
+            ),
             _ => (),
         };
 
-        // find the `tika-rest-server` executable from `Path`
-        match which::which("tika-rest-server") {
-            Ok(path) => Ok(TikaServerFile::PathExecutable(path)),
-            Err(_) => Err(Error::config(
-                "Could not find system wide tika-rest-server executable",
-            )),
+        if cfg!(target_os = "macos") {
+            // find the `tika-rest-server` executable from `Path` installed with homebrew
+            if let Ok(path) = which::which("tika-rest-server") {
+                return Ok(TikaServerFile::PathExecutable(path));
+            }
         }
+        Err(Error::config(
+            "Could not find system wide tika-rest-server executable",
+        ))
     }
 
     /// checks whether the file it points to exists
@@ -635,11 +658,30 @@ impl TikaServerFile {
                 let mut cmd = Command::new(java_path);
                 cmd.arg("-cp");
 
-                if let Some(translate_keys) = translate_keys {
-                    cmd.arg(translate_keys.as_ref()).arg(":");
-                }
+                let mut clazz_path = String::new();
 
-                cmd.arg(path).arg("org.apache.tika.server.TikaServerCli");
+                if let Some(translate_keys) = translate_keys {
+                    clazz_path += translate_keys.as_ref().to_str().ok_or_else(|| {
+                        Error::config(format!(
+                            "Failed to convert path {} , since it is no valid unicode",
+                            translate_keys.as_ref().display()
+                        ))
+                    })?;
+                    if cfg!(target_os = "windows") {
+                        clazz_path += ";";
+                    } else {
+                        clazz_path += ":";
+                    }
+                }
+                clazz_path += path.to_str().ok_or_else(|| {
+                    Error::config(format!(
+                        "Failed to convert path {} , since it is no valid unicode",
+                        path.display()
+                    ))
+                })?;
+
+                cmd.arg(clazz_path)
+                    .arg("org.apache.tika.server.TikaServerCli");
                 cmd
             }
         };
