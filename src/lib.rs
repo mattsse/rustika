@@ -49,7 +49,8 @@ impl Default for TikaMode {
     fn default() -> Self {
         if let Ok(url) = ::std::env::var("TIKA_SERVER_ENDPOINT") {
             TikaMode::ClientOnly(
-                Url::parse(&url).expect(&format!("Failed to convert {} to a valid url", url)),
+                Url::parse(&url)
+                    .unwrap_or_else(|_| panic!("Failed to convert {} to a valid url", url)),
             )
         } else {
             TikaMode::ClientServer(net::SocketAddr::new(

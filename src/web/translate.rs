@@ -30,56 +30,97 @@ impl<T: ToString> From<T> for Language {
     }
 }
 
+/// Represents an executed translation by the tika server
 #[derive(Debug, Clone)]
 pub struct Translation {
+    /// the translated content in the `dest_lang`
     pub content: String,
-
+    /// if a source language was supplied
+    /// if the source language was auto detected, this is `None`
     pub src_lang: Option<Language>,
-
+    /// the language, tika translated to
     pub dest_lang: Language,
 }
 
 #[derive(Debug, Clone)]
+#[allow(missing_docs)]
 pub struct TranslatorKey {
+    /// the tika translator
     pub translator: Translator,
+    /// api key of the translation service
     pub api_key: String,
 }
 
 impl TranslatorKey {
-    pub fn property_content(&self) -> String {
-        format!("{}={}", self.translator.key_value(), self.api_key)
+    /// key value entry for the property file, with the translator specific key and the api-key as value
+    pub fn property_entry(&self) -> String {
+        format!(
+            "translator.{}={}",
+            self.translator.property_key(),
+            self.api_key
+        )
+    }
+
+    pub fn google<T: ToString>(api_key: T) -> Self {
+        TranslatorKey {
+            translator: Translator::Google,
+            api_key: api_key.to_string(),
+        }
+    }
+
+    pub fn lingo24<T: ToString>(api_key: T) -> Self {
+        TranslatorKey {
+            translator: Translator::Lingo24,
+            api_key: api_key.to_string(),
+        }
+    }
+
+    pub fn yandex<T: ToString>(api_key: T) -> Self {
+        TranslatorKey {
+            translator: Translator::Yandex,
+            api_key: api_key.to_string(),
+        }
     }
 }
 
+/// represents how the api keys should be included
 #[derive(Debug, Clone)]
 pub enum TranslatorProperties {
+    /// directory where property files are already available
     Dir(PathBuf),
+    /// Translator keys added on demand
     Keys(Vec<TranslatorKey>),
 }
 
 impl TranslatorProperties {
-    pub(crate) fn dir<P: AsRef<Path>>(&self, tika_path: P) -> Result<PathBuf> {
+    /// returns the folder where the property files are stored
+    /// if only keys are supplied, the necessary files/folder will be created
+    pub(crate) fn property_dir<P: AsRef<Path>>(&self, tika_path: P) -> Result<PathBuf> {
         match self {
             TranslatorProperties::Dir(dir) => Ok(dir.clone()),
             TranslatorProperties::Keys(keys) => {
-                let dir = tika_path
-                    .as_ref()
-                    .join("language-keys/org/apache/tika/language/translate");
+                let root = tika_path.as_ref().join("language-keys");
 
-                let _ = fs::create_dir(&dir)?;
+                let dir = root.join("org/apache/tika/language/translate");
 
+                fs::create_dir_all(&dir)?;
+                debug!(
+                    "Created {} directory for translator properties",
+                    dir.display()
+                );
                 for key in keys {
                     let property_file =
                         dir.join(format!("translator.{}.properties", key.translator.id()));
-                    let _ = fs::write(property_file, key.property_content())?;
+                    fs::write(property_file, key.property_entry())?;
                 }
 
-                Ok(dir)
+                Ok(root)
             }
         }
     }
 }
 
+/// Available translators on the tika server
 #[derive(Debug, Clone)]
 #[allow(missing_docs)]
 pub enum Translator {
@@ -106,6 +147,7 @@ impl Translator {
         }
     }
 
+    /// unique identifier, lowercase class name without `translator`
     pub fn id(&self) -> String {
         match self {
             Translator::Lingo24 => "lingo24".to_string(),
@@ -118,12 +160,13 @@ impl Translator {
         }
     }
 
-    pub fn key_value(&self) -> &str {
+    /// name of the translator specific identifier in the property file
+    pub fn property_key(&self) -> &str {
         match self {
             Translator::Lingo24 => "user-key",
             Translator::Other(_) => "user-key",
             Translator::Google => "client-secret",
-            Translator::Yandex => "translator.api-key",
+            Translator::Yandex => "api-key",
         }
     }
 }
